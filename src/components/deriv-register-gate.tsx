@@ -11,7 +11,8 @@ import {
   type ReactNode,
 } from "react";
 
-const IFRAME_LOADER_MIN_MS = 1200;
+/** Extra dwell after iframe `load` — keep short so the hang-tight state does not outstay Deriv. */
+const IFRAME_LOADER_MIN_MS = 220;
 
 type RegisterContextValue = { open: () => void };
 
@@ -53,10 +54,26 @@ async function exitFullscreenIfAny(): Promise<void> {
   }
 }
 
+async function requestElementFullscreen(el: HTMLElement): Promise<void> {
+  const req =
+    el.requestFullscreen?.bind(el) ??
+    (
+      el as HTMLElement & {
+        webkitRequestFullscreen?: () => Promise<void>;
+      }
+    ).webkitRequestFullscreen?.bind(el) ??
+    (
+      el as HTMLElement & {
+        mozRequestFullScreen?: () => Promise<void>;
+      }
+    ).mozRequestFullScreen?.bind(el);
+  if (req) await req();
+}
+
 function RegisterLoaderOverlay({ visible }: { visible: boolean }) {
   return (
     <div
-      className={`absolute inset-0 z-10 flex flex-col items-center justify-center gap-6 bg-gradient-to-b from-[#0d1a14]/95 via-[var(--background)]/96 to-[#0a0f1a]/97 px-6 transition-opacity duration-500 motion-reduce:transition-none ${
+      className={`absolute inset-0 z-10 flex flex-col items-center justify-center gap-6 bg-gradient-to-b from-[#0d1a14]/95 via-[var(--background)]/96 to-[#0a0f1a]/97 px-6 transition-opacity duration-200 motion-reduce:transition-none ${
         visible ? "opacity-100" : "pointer-events-none opacity-0"
       }`}
       aria-hidden={!visible}
@@ -87,11 +104,21 @@ function RegisterLoaderOverlay({ visible }: { visible: boolean }) {
   );
 }
 
+function isCoarseOrNarrowViewport(): boolean {
+  if (typeof window === "undefined") return false;
+  return (
+    window.matchMedia("(pointer: coarse)").matches ||
+    window.matchMedia("(max-width: 767px)").matches
+  );
+}
+
 export function DerivRegisterGate({ children }: { children: ReactNode }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const iframeStageRef = useRef<HTMLDivElement>(null);
   const iframeLoadStartedAt = useRef(0);
+  const iframeFirstLoadHandled = useRef(false);
   const hideLoaderTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoBrowserFsTried = useRef(false);
   const [openGeneration, setOpenGeneration] = useState(0);
   const [frameUrl, setFrameUrl] = useState<string | null>(null);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "error">(
@@ -110,6 +137,8 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
   const resetContent = useCallback(() => {
     clearHideTimer();
     void exitFullscreenIfAny();
+    iframeFirstLoadHandled.current = false;
+    autoBrowserFsTried.current = false;
     setFrameUrl(null);
     setLoadState("idle");
     setIframeLoaderDone(true);
@@ -145,6 +174,7 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
     if (openGeneration === 0) return;
 
     let cancelled = false;
+    iframeFirstLoadHandled.current = false;
     setLoadState("loading");
     setFrameUrl(null);
     setIframeLoaderDone(false);
@@ -174,11 +204,14 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
     if (!frameUrl || loadState !== "ready") return;
     const failSafe = window.setTimeout(() => {
       setIframeLoaderDone(true);
-    }, 15_000);
+    }, 8000);
     return () => clearTimeout(failSafe);
   }, [frameUrl, loadState]);
 
   const finishIframeLoader = useCallback(() => {
+    if (iframeFirstLoadHandled.current) return;
+    iframeFirstLoadHandled.current = true;
+
     const elapsed = Date.now() - iframeLoadStartedAt.current;
     const wait = Math.max(0, IFRAME_LOADER_MIN_MS - elapsed);
     clearHideTimer();
@@ -190,6 +223,24 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
 
   useEffect(() => () => clearHideTimer(), [clearHideTimer]);
 
+  /** Browser fullscreen API (desktop): optional extra chrome hiding. Mobile uses full-viewport dialog CSS instead. */
+  useEffect(() => {
+    if (!iframeLoaderDone || !frameUrl || loadState !== "ready") return;
+    if (autoBrowserFsTried.current) return;
+    if (isCoarseOrNarrowViewport()) return;
+
+    autoBrowserFsTried.current = true;
+    const stage = iframeStageRef.current;
+    if (!stage || getFullscreenElement()) return;
+
+    const t = window.setTimeout(() => {
+      void requestElementFullscreen(stage).catch(() => {
+        /* gesture / policy — user can tap Full screen */
+      });
+    }, 400);
+    return () => clearTimeout(t);
+  }, [iframeLoaderDone, frameUrl, loadState]);
+
   const toggleIframeFullscreen = useCallback(async () => {
     const el = iframeStageRef.current;
     if (!el || !frameUrl) return;
@@ -199,13 +250,7 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
         await exitFullscreenIfAny();
         return;
       }
-      const req =
-        el.requestFullscreen?.bind(el) ??
-        (el as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> })
-          .webkitRequestFullscreen?.bind(el) ??
-        (el as HTMLElement & { mozRequestFullScreen?: () => Promise<void> })
-          .mozRequestFullScreen?.bind(el);
-      if (req) await req();
+      await requestElementFullscreen(el);
     } catch {
       /* Safari / privacy mode may block */
     }
@@ -230,14 +275,15 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
       {children}
       <dialog
         ref={dialogRef}
-        className="deriv-register-dialog fixed inset-0 z-[100] m-auto max-h-[90vh] w-[min(100vw-1.5rem,56rem)] max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--background)] p-0 text-[var(--foreground)] shadow-2xl"
+        className="deriv-register-dialog fixed inset-0 z-[100] m-0 flex h-[100dvh] max-h-[100dvh] w-full flex-col overflow-hidden rounded-none border-0 bg-[var(--background)] p-0 text-[var(--foreground)] shadow-2xl"
       >
-        <div className="flex items-start justify-between gap-3 border-b border-[var(--border)] px-4 py-3 sm:px-5">
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-[var(--border)] px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-5 sm:pt-3">
           <div className="min-w-0">
             <p className="text-sm font-semibold text-white">Register on Deriv</p>
             <p className="mt-0.5 text-xs text-[var(--muted)]">
-              Complete sign-up below. Use full screen for more room — this page stays open behind
-              it.
+              Full screen on your device — use{" "}
+              <span className="text-white/70">Full screen</span> below if the browser hides the
+              address bar. Next steps load inside Deriv and may take a moment.
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-1 sm:gap-2">
@@ -261,7 +307,7 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
           </div>
         </div>
 
-        <div className="relative min-h-[min(70vh,640px)] flex-1 bg-black/50">
+        <div className="relative flex min-h-0 flex-1 flex-col bg-black/50">
           <RegisterLoaderOverlay visible={showLoaderOverlay} />
           {loadState === "error" ? (
             <div className="absolute inset-0 z-[5] flex flex-col items-center justify-center gap-4 bg-[var(--background)] p-6 text-center">
@@ -281,12 +327,12 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
           {frameUrl ? (
             <div
               ref={iframeStageRef}
-              className="deriv-iframe-stage relative h-full min-h-[min(70vh,640px)] w-full"
+              className="deriv-iframe-stage relative min-h-0 flex-1 bg-black/30"
             >
               <iframe
                 title="Deriv registration"
                 src={frameUrl}
-                className="deriv-iframe-el h-full min-h-[min(70vh,640px)] w-full border-0"
+                className="deriv-iframe-el h-full w-full border-0"
                 referrerPolicy="no-referrer-when-downgrade"
                 allowFullScreen
                 allow="fullscreen"
@@ -305,7 +351,7 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
           ) : null}
         </div>
 
-        <div className="border-t border-[var(--border)] px-4 py-3 sm:px-5">
+        <div className="shrink-0 border-t border-[var(--border)] px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:px-5 sm:pb-3">
           <p className="text-center text-[11px] leading-relaxed text-white/45">
             If the area stays blank, the broker may block embedding — use{" "}
             <a
@@ -316,7 +362,8 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
             >
               open in a new tab
             </a>{" "}
-            instead (your affiliate tracking still applies).
+            instead (your affiliate tracking still applies). After you tap buttons inside Deriv,
+            the next screen is controlled by them — short waits there are normal.
           </p>
         </div>
       </dialog>
