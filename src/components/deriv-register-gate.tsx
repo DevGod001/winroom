@@ -14,6 +14,13 @@ import {
 /** Extra dwell after iframe `load` — keep short so the hang-tight state does not outstay Deriv. */
 const IFRAME_LOADER_MIN_MS = 220;
 
+/** Prefetched signup URL stays valid for this long (affiliate query rarely changes). */
+const AFFILIATE_URL_TTL_MS = 10 * 60 * 1000;
+
+/** If iframe `load` never fires (iOS quirks / slow redirects), hide overlay after this once URL is set. */
+const IFRAME_LOAD_FAILSAFE_DESKTOP_MS = 6000;
+const IFRAME_LOAD_FAILSAFE_MOBILE_MS = 2400;
+
 type RegisterContextValue = { open: () => void };
 
 const RegisterContext = createContext<RegisterContextValue | null>(null);
@@ -112,6 +119,17 @@ function isCoarseOrNarrowViewport(): boolean {
   );
 }
 
+/** iOS / most phones: Fullscreen API does not apply to a div; our button would fail silently. */
+function canUseElementFullscreen(): boolean {
+  if (typeof document === "undefined") return false;
+  if (isCoarseOrNarrowViewport()) return false;
+  const p =
+    typeof document.createElement("div").requestFullscreen === "function";
+  return p;
+}
+
+type PrefetchedAffiliate = { url: string; fetchedAt: number };
+
 export function DerivRegisterGate({ children }: { children: ReactNode }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const iframeStageRef = useRef<HTMLDivElement>(null);
@@ -119,6 +137,7 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
   const iframeFirstLoadHandled = useRef(false);
   const hideLoaderTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoBrowserFsTried = useRef(false);
+  const prefetchedAffiliateRef = useRef<PrefetchedAffiliate | null>(null);
   const [openGeneration, setOpenGeneration] = useState(0);
   const [frameUrl, setFrameUrl] = useState<string | null>(null);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "error">(
@@ -126,6 +145,8 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
   );
   const [iframeLoaderDone, setIframeLoaderDone] = useState(true);
   const [isIframeFullscreen, setIsIframeFullscreen] = useState(false);
+  /** Client-only — avoids SSR vs desktop hydration mismatch for Full screen controls. */
+  const [desktopFullscreenOffered, setDesktopFullscreenOffered] = useState(false);
 
   const clearHideTimer = useCallback(() => {
     if (hideLoaderTimer.current) {
@@ -144,6 +165,10 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
     setIframeLoaderDone(true);
     setIsIframeFullscreen(false);
   }, [clearHideTimer]);
+
+  useEffect(() => {
+    setDesktopFullscreenOffered(canUseElementFullscreen());
+  }, []);
 
   useEffect(() => {
     const onFsChange = () => {
@@ -170,20 +195,60 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
     return () => d.removeEventListener("close", onDialogClose);
   }, [resetContent]);
 
+  /** Warm affiliate URL in the background so Register does not wait on cold /api on first tap. */
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/deriv/affiliate-url", { credentials: "same-origin" })
+      .then(async (r) => {
+        if (!r.ok || cancelled) return;
+        const data = (await r.json()) as { url?: string };
+        if (!data.url || cancelled) return;
+        prefetchedAffiliateRef.current = { url: data.url, fetchedAt: Date.now() };
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     if (openGeneration === 0) return;
 
     let cancelled = false;
     iframeFirstLoadHandled.current = false;
-    setLoadState("loading");
-    setFrameUrl(null);
     setIframeLoaderDone(false);
+
+    const cached = prefetchedAffiliateRef.current;
+    const cacheAge = cached ? Date.now() - cached.fetchedAt : Infinity;
+    if (cached && cacheAge < AFFILIATE_URL_TTL_MS) {
+      iframeLoadStartedAt.current = Date.now();
+      setFrameUrl(cached.url);
+      setLoadState("ready");
+    } else {
+      setLoadState("loading");
+      setFrameUrl(null);
+    }
+
+    if (cached && cacheAge < AFFILIATE_URL_TTL_MS) {
+      fetch("/api/deriv/affiliate-url", { credentials: "same-origin" })
+        .then(async (r) => {
+          if (!r.ok || cancelled) return;
+          const data = (await r.json()) as { url?: string };
+          if (cancelled || !data.url) return;
+          prefetchedAffiliateRef.current = { url: data.url, fetchedAt: Date.now() };
+        })
+        .catch(() => {});
+      return () => {
+        cancelled = true;
+      };
+    }
 
     fetch("/api/deriv/affiliate-url", { credentials: "same-origin" })
       .then(async (r) => {
         if (!r.ok) throw new Error("affiliate url unavailable");
         const data = (await r.json()) as { url?: string };
         if (cancelled || !data.url) return;
+        prefetchedAffiliateRef.current = { url: data.url, fetchedAt: Date.now() };
         iframeLoadStartedAt.current = Date.now();
         setFrameUrl(data.url);
         setLoadState("ready");
@@ -202,15 +267,21 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!frameUrl || loadState !== "ready") return;
+    const ms = isCoarseOrNarrowViewport()
+      ? IFRAME_LOAD_FAILSAFE_MOBILE_MS
+      : IFRAME_LOAD_FAILSAFE_DESKTOP_MS;
     const failSafe = window.setTimeout(() => {
       setIframeLoaderDone(true);
-    }, 8000);
+    }, ms);
     return () => clearTimeout(failSafe);
   }, [frameUrl, loadState]);
 
   const finishIframeLoader = useCallback(() => {
     if (iframeFirstLoadHandled.current) return;
     iframeFirstLoadHandled.current = true;
+    if (!iframeLoadStartedAt.current) {
+      iframeLoadStartedAt.current = Date.now();
+    }
 
     const elapsed = Date.now() - iframeLoadStartedAt.current;
     const wait = Math.max(0, IFRAME_LOADER_MIN_MS - elapsed);
@@ -223,11 +294,11 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
 
   useEffect(() => () => clearHideTimer(), [clearHideTimer]);
 
-  /** Browser fullscreen API (desktop): optional extra chrome hiding. Mobile uses full-viewport dialog CSS instead. */
+  /** Browser fullscreen API (desktop only): optional extra chrome hiding. */
   useEffect(() => {
     if (!iframeLoaderDone || !frameUrl || loadState !== "ready") return;
     if (autoBrowserFsTried.current) return;
-    if (isCoarseOrNarrowViewport()) return;
+    if (!canUseElementFullscreen()) return;
 
     autoBrowserFsTried.current = true;
     const stage = iframeStageRef.current;
@@ -258,7 +329,6 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
 
   const open = useCallback(() => {
     resetContent();
-    setLoadState("loading");
     setOpenGeneration((g) => g + 1);
     dialogRef.current?.showModal();
   }, [resetContent]);
@@ -268,7 +338,10 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
     (loadState === "ready" && Boolean(frameUrl) && !iframeLoaderDone);
 
   const showFullscreenChrome =
-    Boolean(frameUrl) && loadState === "ready" && !showLoaderOverlay;
+    Boolean(frameUrl) &&
+    loadState === "ready" &&
+    !showLoaderOverlay &&
+    desktopFullscreenOffered;
 
   return (
     <RegisterContext.Provider value={{ open }}>
@@ -281,9 +354,18 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
           <div className="min-w-0">
             <p className="text-sm font-semibold text-white">Register on Deriv</p>
             <p className="mt-0.5 text-xs text-[var(--muted)]">
-              Full screen on your device — use{" "}
-              <span className="text-white/70">Full screen</span> below if the browser hides the
-              address bar. Next steps load inside Deriv and may take a moment.
+              {desktopFullscreenOffered ? (
+                <>
+                  Use{" "}
+                  <span className="text-white/70">Full screen</span> below to hide browser chrome
+                  on desktop. Next steps inside Deriv may take a moment.
+                </>
+              ) : (
+                <>
+                  This sheet uses the full screen on phones — mobile browsers don&apos;t allow true
+                  fullscreen for embedded pages. Next steps inside Deriv may take a moment.
+                </>
+              )}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-1 sm:gap-2">
