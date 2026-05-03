@@ -83,7 +83,7 @@ body {
 }
 
 .deriv-register-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.65);
+  background: rgba(0, 0, 0, 0.38);
 }
 
 /* Expand embedded Deriv when the iframe stage is fullscreen */

@@ -102,11 +102,8 @@ function RegisterLoaderOverlay({ visible }: { visible: boolean }) {
       </div>
       <div className="max-w-xs text-center">
         <p className="text-base font-semibold text-white">Hang tight</p>
-        <p className="mt-2 text-sm leading-relaxed text-[var(--muted)]">
-          We&apos;re opening secure sign-up for you. This usually takes just a moment.
-        </p>
+        <p className="mt-2 text-sm text-[var(--muted)]">Almost there…</p>
       </div>
-      <p className="text-[11px] tracking-wide text-white/35">Connecting…</p>
     </div>
   );
 }
@@ -348,68 +345,27 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
       {children}
       <dialog
         ref={dialogRef}
-        className="deriv-register-dialog fixed inset-0 z-[100] m-0 flex h-[100dvh] max-h-[100dvh] w-full flex-col overflow-hidden rounded-none border-0 bg-[var(--background)] p-0 text-[var(--foreground)] shadow-2xl"
+        className="deriv-register-dialog fixed inset-0 z-[100] m-0 flex h-[100dvh] max-h-[100dvh] w-full flex-col overflow-hidden rounded-none border-0 bg-transparent p-0 shadow-none"
       >
-        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-[var(--border)] px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-5 sm:pt-3">
-          <div className="min-w-0">
-            <p className="text-sm font-semibold text-white">Register on Deriv</p>
-            <p className="mt-0.5 text-xs text-[var(--muted)]">
-              {desktopFullscreenOffered ? (
-                <>
-                  Use{" "}
-                  <span className="text-white/70">Full screen</span> below to hide browser chrome
-                  on desktop. Next steps inside Deriv may take a moment.
-                </>
-              ) : (
-                <>
-                  This sheet uses the full screen on phones — mobile browsers don&apos;t allow true
-                  fullscreen for embedded pages. Next steps inside Deriv may take a moment.
-                </>
-              )}
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-1 sm:gap-2">
-            {showFullscreenChrome ? (
-              <button
-                type="button"
-                onClick={() => void toggleIframeFullscreen()}
-                className="rounded-lg px-2 py-1.5 text-xs font-semibold text-emerald-400/95 transition hover:bg-white/10 hover:text-emerald-300 sm:px-3 sm:text-sm"
-              >
-                {isIframeFullscreen ? "Exit full screen" : "Full screen"}
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="rounded-lg px-2 py-1 text-sm text-white/60 transition hover:bg-white/10 hover:text-white"
-              onClick={() => dialogRef.current?.close()}
-              aria-label="Close registration"
-            >
-              ×
-            </button>
-          </div>
-        </div>
-
-        <div className="relative flex min-h-0 flex-1 flex-col bg-black/50">
+        <div className="relative flex min-h-0 flex-1 flex-col bg-transparent">
           <RegisterLoaderOverlay visible={showLoaderOverlay} />
           {loadState === "error" ? (
-            <div className="absolute inset-0 z-[5] flex flex-col items-center justify-center gap-4 bg-[var(--background)] p-6 text-center">
-              <p className="text-sm text-[var(--muted)]">
-                Registration could not be loaded here.
-              </p>
+            <div className="absolute inset-0 z-[5] flex flex-col items-center justify-center gap-4 bg-[var(--background)]/95 p-6 text-center backdrop-blur-sm">
+              <p className="text-sm text-[var(--muted)]">Couldn&apos;t load here.</p>
               <a
                 href="/go"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="rounded-xl bg-emerald-400 px-6 py-3 text-sm font-bold text-emerald-950 transition hover:bg-emerald-300"
               >
-                Open Deriv in a new tab
+                Continue in a new tab
               </a>
             </div>
           ) : null}
           {frameUrl ? (
             <div
               ref={iframeStageRef}
-              className="deriv-iframe-stage relative min-h-0 flex-1 bg-black/30"
+              className="deriv-iframe-stage relative min-h-0 flex-1 w-full bg-black"
             >
               <iframe
                 title="Deriv registration"
@@ -420,33 +376,28 @@ export function DerivRegisterGate({ children }: { children: ReactNode }) {
                 allow="fullscreen"
                 onLoad={finishIframeLoader}
               />
-              {showFullscreenChrome ? (
-                <button
-                  type="button"
-                  onClick={() => void toggleIframeFullscreen()}
-                  className="absolute bottom-3 right-3 z-[6] rounded-lg border border-white/15 bg-[#0a0f1a]/90 px-3 py-2 text-xs font-semibold text-emerald-300 shadow-lg backdrop-blur-sm transition hover:border-emerald-400/40 hover:bg-[#0a0f1a] hover:text-emerald-200 sm:text-sm"
-                >
-                  {isIframeFullscreen ? "Exit full screen" : "Full screen"}
-                </button>
-              ) : null}
             </div>
           ) : null}
         </div>
 
-        <div className="shrink-0 border-t border-[var(--border)] px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:px-5 sm:pb-3">
-          <p className="text-center text-[11px] leading-relaxed text-white/45">
-            If the area stays blank, the broker may block embedding — use{" "}
-            <a
-              href="/go"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="font-medium text-emerald-400/90 underline-offset-2 hover:underline"
+        <div className="pointer-events-none absolute left-0 right-0 top-0 z-[120] flex justify-end gap-2 pt-[max(0.35rem,env(safe-area-inset-top))] pr-[max(0.35rem,env(safe-area-inset-right))]">
+          {showFullscreenChrome ? (
+            <button
+              type="button"
+              onClick={() => void toggleIframeFullscreen()}
+              className="pointer-events-auto rounded-full border border-white/20 bg-black/55 px-3 py-1.5 text-xs font-semibold text-white/95 shadow-lg backdrop-blur-md transition hover:bg-black/70 sm:text-sm"
             >
-              open in a new tab
-            </a>{" "}
-            instead (your affiliate tracking still applies). After you tap buttons inside Deriv,
-            the next screen is controlled by them — short waits there are normal.
-          </p>
+              {isIframeFullscreen ? "Exit full screen" : "Full screen"}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="pointer-events-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/20 bg-black/55 text-xl leading-none text-white shadow-lg backdrop-blur-md transition hover:bg-black/70"
+            onClick={() => dialogRef.current?.close()}
+            aria-label="Close"
+          >
+            ×
+          </button>
         </div>
       </dialog>
     </RegisterContext.Provider>
